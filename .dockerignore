@@ -1,0 +1,14 @@
+dependencies/
+aws_lambda_artifact.zip
+.git/
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.env
+.venv/
+venv/
+*.md
+.vscode/
+.idea/

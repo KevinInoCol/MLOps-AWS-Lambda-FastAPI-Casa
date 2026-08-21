@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# Empaquetado Lambda
+dependencies/
+aws_lambda_artifact.zip
+
+# Entorno
+.env
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
