@@ -1,9 +1,14 @@
+# Versiones fijas: builds reproducibles.
+# scikit-learn DEBE coincidir con la versión con la que se entrenó el modelo (.joblib → 1.4.2).
 numpy==1.26.4
-fastapi
-uvicorn
-python-multipart
-mangum
-pandas
-scikit-learn==1.5.2
-joblib
+pandas==2.2.3
+scipy==1.14.1
+scikit-learn==1.4.2
 feature-engine==1.8.2
+statsmodels==0.14.4   # dependencia de feature-engine; 0.15+ no tiene binarios para Amazon Linux 2
+joblib==1.4.2
+
+# API
+fastapi==0.115.6
+mangum==0.19.0
+python-multipart==0.0.20

@@ -1,0 +1,4 @@
+Id,MSSubClass,MSZoning,LotFrontage,LotShape,LandContour,LotConfig,Neighborhood,OverallQual,OverallCond,YearRemodAdd,RoofStyle,Exterior1st,ExterQual,Foundation,BsmtQual,BsmtExposure,BsmtFinType1,HeatingQC,CentralAir,1stFlrSF,2ndFlrSF,GrLivArea,BsmtFullBath,HalfBath,KitchenQual,TotRmsAbvGrd,Functional,Fireplaces,FireplaceQu,GarageFinish,GarageCars,GarageArea,PavedDrive,WoodDeckSF,ScreenPorch,SaleCondition,YrSold
+1,60,RL,65,Reg,Lvl,Inside,CollgCr,7,5,2003,Gable,VinylSd,Gd,PConc,Gd,No,GLQ,Ex,Y,856,854,1710,1,1,Gd,8,Typ,0,,RFn,2,548,Y,0,0,Normal,2008
+2,20,RL,80,Reg,Lvl,FR2,Veenker,6,8,1976,Gable,MetalSd,TA,CBlock,Gd,Gd,ALQ,Ex,Y,1262,0,1262,0,0,TA,6,Typ,1,TA,RFn,2,460,Y,298,0,Normal,2007
+3,60,RL,68,IR1,Lvl,Inside,CollgCr,7,5,2002,Gable,VinylSd,Gd,PConc,Gd,Mn,GLQ,Ex,Y,920,866,1786,1,1,Gd,6,Typ,1,TA,RFn,2,608,Y,0,0,Normal,2008

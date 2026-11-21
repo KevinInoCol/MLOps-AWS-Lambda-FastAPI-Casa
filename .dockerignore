@@ -1,14 +1,24 @@
-dependencies/
-aws_lambda_artifact.zip
+# Secretos y credenciales: nunca dentro de la imagen
+.env
+.aws/
+
+# Control de versiones, entornos y editores
 .git/
 .gitignore
+.venv/
+venv/
+.vscode/
+.idea/
+.claude/
+
+# Artefactos del método ZIP y basura de Python/macOS
+dependencies/
+*.zip
 __pycache__/
 *.pyc
 *.pyo
 .DS_Store
-.env
-.venv/
-venv/
+
+# Documentación y datos de prueba
 *.md
-.vscode/
-.idea/
+*.csv

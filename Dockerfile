@@ -1,18 +1,15 @@
+# Imagen base oficial de AWS Lambda (trae el runtime y el emulador para pruebas locales)
 FROM public.ecr.aws/lambda/python:3.11
 
-# Copiamos requirements
+# 1. Dependencias primero: si solo cambia el código, Docker reutiliza esta capa
+# --only-binary=:all: → solo wheels precompilados. La imagen python:3.11 corre sobre
+#   Amazon Linux 2 (glibc 2.26) y NO trae gcc: si una librería no tiene wheel compatible,
+#   el build falla en vez de intentar compilarla.
 COPY requirements.txt ${LAMBDA_TASK_ROOT}
+RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt --target "${LAMBDA_TASK_ROOT}"
 
-# 1. Actualizamos pip (importante para que detecte los archivos de Linux)
-RUN pip install --upgrade pip
-
-# 2. Instalamos PROHIBIENDO la compilación (--only-binary=:all:)
-# Esto evitará el error de "gcc" o "cc not found"
-RUN pip install -r requirements.txt --only-binary=:all: --platform manylinux2014_x86_64 --target "${LAMBDA_TASK_ROOT}"
-
-# Copiamos el código de la app (main.py, modelo, carpetas).
-# Está en application/, pero copiamos su CONTENIDO a la raíz de /var/task
-# para que los imports (configuraciones, input) y la carga del modelo funcionen.
+# 2. Código y modelo: el CONTENIDO de application/ va a la raíz de /var/task
 COPY application/ ${LAMBDA_TASK_ROOT}
 
+# 3. Handler de Lambda: archivo main.py, objeto handler (Mangum)
 CMD [ "main.handler" ]

@@ -40,21 +40,65 @@ proyecto/
 └── .dockerignore
 ```
 
-Requisitos en el código (`main.py`):
+## Buenas prácticas del código (`main.py`)
 
 ```python
+import os, joblib
 from fastapi import FastAPI
 from mangum import Mangum
 
+DIRECTORIO_APP = os.path.dirname(os.path.abspath(__file__))
+
+# 1. El modelo se carga UNA vez, al importar el módulo (fase INIT de Lambda),
+#    no dentro del endpoint. Las invocaciones "calientes" lo reutilizan.
+PIPELINE = joblib.load(os.path.join(DIRECTORIO_APP, "modelo.joblib"))
+
 app = FastAPI()
-handler = Mangum(app)            # el Dockerfile termina con CMD ["main.handler"]
+handler = Mangum(app, lifespan="off")   # CMD ["main.handler"] en el Dockerfile
 ```
 
-- `/var/task` (donde vive el código) es **solo lectura**. Cualquier archivo temporal (CSV subidos, salidas) se escribe en **`/tmp`** (512 MB por defecto, ampliable hasta 10 GB con `--ephemeral-storage`).
-- Los imports son relativos a la raíz de `application/` (`from configuraciones import config`), porque su contenido queda en la raíz de `/var/task`.
-- Si el pipeline usa transformadores propios (clases en `input/preprocessors.py`), el `.joblib` guarda la ruta del módulo (p. ej. `input.preprocessors`). **Esa carpeta debe existir con el mismo nombre en la imagen**, o `joblib.load` falla con `ModuleNotFoundError`.
-- Fija versiones de las librerías que serializan el modelo (`scikit-learn`, `feature-engine`, `numpy`) **iguales a las del entrenamiento**, o `joblib.load` fallará o predecirá distinto.
-- Para subir archivos con `UploadFile` hace falta `python-multipart` en `requirements.txt`.
+- **Cargar pesos, clientes y conexiones fuera del handler.** La fase INIT tiene ráfaga de CPU y se ejecuta una vez por instancia. Cargar el modelo por request suma segundos a cada llamada.
+- **Rutas relativas a `__file__`, no a `os.getcwd()`.** Así funciona igual en Lambda y en local.
+- **Leer archivos subidos en memoria:** `pd.read_csv(file.file)`. No los guardes en disco con `file.filename`: un nombre como `../x` permite escribir fuera de la carpeta, y `/tmp` se comparte entre invocaciones calientes. Si necesitas disco, usa `/tmp` con un nombre generado por ti. `/var/task` es **solo lectura**.
+- **Devolver el resultado desde memoria:** `Response(content=..., media_type="text/csv")` en lugar de escribir en `/tmp` y usar `FileResponse`.
+- **Validar la entrada** (columnas faltantes → 422, archivo ilegible → 400) y dejar el 500 solo para errores reales, con `traceback.print_exc()` para verlos en CloudWatch.
+- **Al validar CSV, acepta también la extensión `.csv`:** Windows y Excel suelen mandar `application/vnd.ms-excel` como content-type.
+- **Sin endpoints de depuración** (listar archivos, variables de entorno) en una URL pública.
+- **Imports relativos a la raíz de `application/`** (`from configuraciones import config`), porque su contenido queda en la raíz de `/var/task`.
+- **Transformadores propios dentro del `.joblib`:** si el pipeline usa clases de `input/preprocessors.py`, el `.joblib` guarda la ruta del módulo (`input.preprocessors`). **Esa carpeta debe existir con el mismo nombre en la imagen**, o `joblib.load` falla con `ModuleNotFoundError`.
+
+## Buenas prácticas de `requirements.txt`
+
+- **Fija TODAS las versiones** (`==`), incluidas las dependencias indirectas que dan problemas. Sin versiones fijas, cada build puede instalar algo distinto y romperse sin que cambies nada.
+- **scikit-learn debe ser la MISMA versión con la que se entrenó el modelo.** Puedes leerla del propio `.joblib` sin cargarlo:
+
+  ```bash
+  python3 -c "
+  import pickletools; d=open('application/modelo.joblib','rb').read(); prev=None
+  for op,arg,_ in pickletools.genops(d):
+      if prev=='_sklearn_version' and isinstance(arg,str): print('sklearn:',arg); break
+      prev=arg if isinstance(arg,str) else prev"
+  ```
+
+  (Solo funciona si el `.joblib` no está comprimido.)
+- **No incluyas `uvicorn`:** en Lambda no se usa, porque Mangum hace de puente. Si quieres correr la API en local, instálalo aparte.
+- **Incluye `python-multipart`:** hace falta para recibir archivos con `UploadFile`.
+- **Ojo con las dependencias indirectas en la imagen `python:3.11`.** Corre sobre **Amazon Linux 2 (glibc 2.26)** y no trae compilador. Las versiones nuevas de algunas librerías ya no publican wheels para esa glibc. Ejemplo real: `feature-engine` arrastra `statsmodels`, y `statsmodels 0.15` intenta compilarse y falla. Solución: fijar `statsmodels==0.14.4`.
+
+Ejemplo probado (modelo de House Prices, scikit-learn 1.4.2, Python 3.11):
+
+```
+numpy==1.26.4
+pandas==2.2.3
+scipy==1.14.1
+scikit-learn==1.4.2
+feature-engine==1.8.2
+statsmodels==0.14.4
+joblib==1.4.2
+fastapi==0.115.6
+mangum==0.19.0
+python-multipart==0.0.20
+```
 
 ## Paso 0 — Prerequisitos y variables
 
@@ -86,20 +130,31 @@ Las variables se pierden al cerrar la terminal. Si abres otra, vuelve a ejecutar
 `Dockerfile` (imagen base oficial de Lambda):
 
 ```dockerfile
+# Imagen base oficial de AWS Lambda (trae el runtime y el emulador para pruebas locales)
 FROM public.ecr.aws/lambda/python:3.11
 
+# 1. Dependencias primero: si solo cambia el código, Docker reutiliza esta capa
+# --only-binary=:all: → solo wheels precompilados. La imagen python:3.11 corre sobre
+#   Amazon Linux 2 (glibc 2.26) y NO trae gcc: si una librería no tiene wheel compatible,
+#   el build falla en vez de intentar compilarla.
 COPY requirements.txt ${LAMBDA_TASK_ROOT}
+RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt --target "${LAMBDA_TASK_ROOT}"
 
-# Wheels de Linux x86_64 y sin compilar desde fuente (evita "gcc not found")
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt --only-binary=:all: \
-      --platform manylinux2014_x86_64 --target "${LAMBDA_TASK_ROOT}"
-
-# El CONTENIDO de application/ va a la raíz de /var/task
+# 2. Código y modelo: el CONTENIDO de application/ va a la raíz de /var/task
 COPY application/ ${LAMBDA_TASK_ROOT}
 
+# 3. Handler de Lambda: archivo main.py, objeto handler (Mangum)
 CMD [ "main.handler" ]
 ```
+
+Por qué está así:
+- **Imagen base oficial `public.ecr.aws/lambda/python:<versión>`:** trae el Runtime Interface Client y el emulador. No uses `python:3.11-slim` (necesitaría instalar `awslambdaric` a mano).
+- **`requirements.txt` antes que el código:** cambiar `main.py` no reinstala todas las dependencias.
+- **`--no-cache-dir`:** la caché de pip no queda dentro de la imagen, que pesa menos y arranca antes.
+- **`--only-binary=:all:`:** si falta un wheel compatible, el build falla rápido con un error claro, en vez de intentar compilar sin `gcc`.
+- **Sin `--platform manylinux...` dentro del Dockerfile:** como se construye con `docker build --platform linux/amd64`, pip ya corre en Linux x86_64 y elige solo los wheels compatibles con la glibc de la imagen.
+- **Un solo `RUN`:** menos capas.
+- **No hace falta `USER`:** Lambda ya ejecuta la función con un usuario sin privilegios.
 
 `.dockerignore` (mínimo):
 
@@ -109,13 +164,16 @@ CMD [ "main.handler" ]
 .git/
 .venv/
 venv/
-__pycache__/
-*.pyc
+.vscode/
+.idea/
+.claude/
 dependencies/
 *.zip
-*.md
-.vscode/
+__pycache__/
+*.pyc
 .DS_Store
+*.md
+*.csv
 ```
 
 ## Paso 2 — Rol IAM de ejecución
@@ -166,7 +224,7 @@ docker build --platform linux/amd64 --provenance=false -t "$ECR_REPO" .
 > En Mac con Apple Silicon (M1/M2/M3/M4), `--platform linux/amd64` es obligatorio. Sin él la imagen sale arm64 y la Lambda x86_64 falla con `exec format error`.
 > Los "View push commands" de la consola de ECR **no** incluyen `--platform` ni `--provenance=false`; por eso se reemplaza su comando de build por este.
 
-Prueba local opcional antes de subir (la imagen base trae el emulador de Lambda):
+Prueba local **recomendada** antes de subir (la imagen base trae el emulador de Lambda):
 
 ```bash
 docker run --rm -p 9000:8080 "$ECR_REPO"
@@ -175,6 +233,26 @@ curl -s -X POST "http://localhost:9000/2015-03-31/functions/function/invocations
   -d '{"version":"2.0","rawPath":"/","requestContext":{"http":{"method":"GET","path":"/","sourceIp":"127.0.0.1"}},"headers":{},"isBase64Encoded":false}'
 # debe responder {"statusCode": 200, ... "body": "{\"mensaje\": ...}"}
 ```
+
+Para probar la subida del CSV contra el emulador hay que enviar el body multipart en base64, igual que lo hace la Function URL:
+
+```bash
+python3 - <<'EOF'
+import json, base64, urllib.request
+b = "----limite"; csv = open("datos_prueba.csv", "rb").read()
+body = (f'--{b}\r\nContent-Disposition: form-data; name="file"; filename="datos_prueba.csv"\r\n'
+        f'Content-Type: text/csv\r\n\r\n').encode() + csv + f"\r\n--{b}--\r\n".encode()
+ev = {"version": "2.0", "rawPath": "/obtener-datos-de-usuario-y-predecir", "rawQueryString": "",
+      "requestContext": {"http": {"method": "POST", "path": "/obtener-datos-de-usuario-y-predecir", "sourceIp": "127.0.0.1"}},
+      "headers": {"content-type": f"multipart/form-data; boundary={b}"},
+      "body": base64.b64encode(body).decode(), "isBase64Encoded": True}
+r = json.loads(urllib.request.urlopen(urllib.request.Request(
+    "http://localhost:9000/2015-03-31/functions/function/invocations", data=json.dumps(ev).encode())).read())
+print(r["statusCode"]); print(base64.b64decode(r["body"]).decode() if r.get("isBase64Encoded") else r["body"])
+EOF
+```
+
+En los logs del contenedor revisa que **no** aparezca `InconsistentVersionWarning` (versión de scikit-learn distinta a la del entrenamiento).
 
 ```bash
 # 3. Tag + push a ECR
@@ -296,7 +374,8 @@ Costo: Lambda cobra por invocación y por GB-segundo (hay capa gratuita), así q
 | `The image manifest, config or layer media type ... is not supported` | buildx subió un manifest index con attestations | `docker build --provenance=false` y vuelve a hacer push |
 | `exec format error` / `Runtime.InvalidEntrypoint` | Imagen arm64 en una Lambda x86_64 | `--platform linux/amd64` |
 | `Source image ... is not valid` / `does not exist` | `IMAGE_URI` mal formada, tag inexistente o repo en otra región | `aws ecr describe-images` y revisa la URI |
-| `gcc: command not found` durante el build | pip intenta compilar desde fuente | `--only-binary=:all:` y versiones con wheel para Python 3.11 |
+| `gcc: command not found` / `meson.build: Unknown compiler(s)` / `Downloading <paquete>.tar.gz` en el build | Una dependencia (a veces indirecta, como `statsmodels` vía `feature-engine`) no tiene wheel para Amazon Linux 2 y pip intenta compilarla | Fija esa dependencia a una versión con wheel (`statsmodels==0.14.4`) y deja `--only-binary=:all:` |
+| `Could not find a version that satisfies the requirement ...` con `--only-binary` | La versión fijada no tiene wheel para Python 3.11 / glibc 2.26 | Usa una versión anterior de esa librería |
 | `Runtime.ImportModuleError: No module named 'main'` | `main.py` no quedó en la raíz de `/var/task` | `COPY application/ ${LAMBDA_TASK_ROOT}` (copia el contenido, no la carpeta) |
 | `ModuleNotFoundError: No module named 'input'` al cargar el modelo | Falta la carpeta de transformadores propios que referencia el `.joblib` | Cópiala con el mismo nombre de módulo |
 | `Read-only file system` | La app escribe en `/var/task` | Escribe en `/tmp` |
@@ -304,7 +383,8 @@ Costo: Lambda cobra por invocación y por GB-segundo (hay capa gratuita), así q
 | `Runtime exited with error: signal: killed` | Memoria insuficiente | Sube `--memory-size` |
 | `403 Forbidden` / `{"Message":"Forbidden"}` en la URL | Faltan permisos de la Function URL | Los dos `add-permission` del Paso 6 |
 | La Lambda sigue con el código viejo | Hiciste push pero no actualizaste la función | `update-function-code` (Paso 8) |
-| Warning `InconsistentVersionWarning` de sklearn o predicciones raras | Versión de scikit-learn distinta a la del entrenamiento | Fija la misma versión en `requirements.txt` |
+| Warning `InconsistentVersionWarning` de sklearn o predicciones raras | Versión de scikit-learn distinta a la del entrenamiento | Lee la versión del `.joblib` (sección de `requirements.txt`) y fíjala |
+| Cada request tarda segundos aunque la Lambda ya esté caliente | El modelo se carga dentro del endpoint | Cárgalo a nivel de módulo (fase INIT) |
 | `400 El archivo debe ser un CSV` | curl no envió `content-type` | `-F "file=@archivo.csv;type=text/csv"` |
 
 ---
