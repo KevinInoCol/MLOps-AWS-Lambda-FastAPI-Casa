@@ -8,6 +8,9 @@ FROM public.ecr.aws/lambda/python:3.11
 COPY requirements.txt ${LAMBDA_TASK_ROOT}
 RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt --target "${LAMBDA_TASK_ROOT}"
 
+# Lambda no tiene /dev/shm: sin esto joblib avisa "Permission denied ... serial mode" en cada arranque
+ENV JOBLIB_MULTIPROCESSING=0
+
 # 2. Código y modelo: el CONTENIDO de application/ va a la raíz de /var/task
 COPY application/ ${LAMBDA_TASK_ROOT}
 

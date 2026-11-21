@@ -8,6 +8,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from mangum import Mangum
 
@@ -28,6 +29,18 @@ TIPOS_CSV = {"text/csv", "application/csv", "application/vnd.ms-excel", "applica
 PIPELINE = joblib.load(RUTA_MODELO)
 
 app = FastAPI(title="API Precio de Casas")
+
+# CORS: permite que un frontend web (React) en OTRO dominio llame a esta API desde el navegador.
+# CORS_ORIGINS = lista separada por comas, p. ej. "http://localhost:5173,https://mi-app.vercel.app".
+# Sin definir → "*" (cualquier origen; aceptable porque la API es pública y no usa cookies).
+# No configures CORS también en la Function URL: los headers se duplicarían y el navegador falla.
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 # Handler para AWS Lambda (la app no usa eventos de startup/shutdown → lifespan off)
 handler = Mangum(app, lifespan="off")

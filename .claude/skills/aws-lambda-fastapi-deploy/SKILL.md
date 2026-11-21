@@ -40,6 +40,8 @@ proyecto/
 └── .dockerignore
 ```
 
+Si el repo tiene varias apps (p. ej. `Backend-App-.../` y más adelante `Frontend-App-.../`), esta estructura vive **dentro de la carpeta del backend**. Todos los comandos de Docker (`docker build ... .`) se ejecutan **desde esa carpeta**, porque el `.` es el contexto de build y debe contener el `Dockerfile`, `requirements.txt` y `application/`. La carpeta `.claude/` con las skills va en la **raíz** del repo.
+
 ## Buenas prácticas del código (`main.py`)
 
 ```python
@@ -64,6 +66,7 @@ handler = Mangum(app, lifespan="off")   # CMD ["main.handler"] en el Dockerfile
 - **Validar la entrada** (columnas faltantes → 422, archivo ilegible → 400) y dejar el 500 solo para errores reales, con `traceback.print_exc()` para verlos en CloudWatch.
 - **Al validar CSV, acepta también la extensión `.csv`:** Windows y Excel suelen mandar `application/vnd.ms-excel` como content-type.
 - **Sin endpoints de depuración** (listar archivos, variables de entorno) en una URL pública.
+- **CORS solo si un frontend web (React, Vue...) llama a la API desde el navegador.** Usa `CORSMiddleware` en FastAPI con orígenes en la variable `CORS_ORIGINS` (detalle en la skill `react-ml-api-frontend`). Configúralo en un solo lugar: en FastAPI **o** con `--cors` en la Function URL, nunca en los dos. Streamlit no necesita CORS.
 - **Imports relativos a la raíz de `application/`** (`from configuraciones import config`), porque su contenido queda en la raíz de `/var/task`.
 - **Transformadores propios dentro del `.joblib`:** si el pipeline usa clases de `input/preprocessors.py`, el `.joblib` guarda la ruta del módulo (`input.preprocessors`). **Esa carpeta debe existir con el mismo nombre en la imagen**, o `joblib.load` falla con `ModuleNotFoundError`.
 
@@ -125,6 +128,17 @@ export IMAGE_URI=${ECR_REGISTRY}/${ECR_REPO}:latest
 
 Las variables se pierden al cerrar la terminal. Si abres otra, vuelve a ejecutar este bloque.
 
+> **zsh (Mac): usa siempre llaves.** Escribe `"${ECR_REPO}:latest"` y nunca `"$ECR_REPO:latest"`. En zsh, `:l` después de una variable es un modificador (pasa a minúsculas) y se come la `l`: `api-precio-casas:latest` se convierte en `api-precio-casasatest`, con el error `No such image`.
+
+**Comprueba que tu cuenta puede usar la región.** Algunas cuentas (de una organización, de un curso o de la empresa) tienen una **SCP** que bloquea regiones. Antes de crear nada:
+
+```bash
+aws lambda list-functions --region "$AWS_REGION" --max-items 1 >/dev/null && echo "Región OK" \
+  || echo "Región bloqueada: prueba con la de 'aws configure get region'"
+```
+
+Si sale bloqueada, cambia `AWS_REGION` (por ejemplo a la que devuelve `aws configure get region`) y vuelve a ejecutar el bloque de variables. El rol IAM es global y no depende de la región.
+
 ## Paso 1 — Dockerfile y .dockerignore
 
 `Dockerfile` (imagen base oficial de Lambda):
@@ -139,6 +153,9 @@ FROM public.ecr.aws/lambda/python:3.11
 #   el build falla en vez de intentar compilarla.
 COPY requirements.txt ${LAMBDA_TASK_ROOT}
 RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt --target "${LAMBDA_TASK_ROOT}"
+
+# Lambda no tiene /dev/shm: sin esto joblib avisa "Permission denied ... serial mode" en cada arranque
+ENV JOBLIB_MULTIPROCESSING=0
 
 # 2. Código y modelo: el CONTENIDO de application/ va a la raíz de /var/task
 COPY application/ ${LAMBDA_TASK_ROOT}
@@ -155,6 +172,7 @@ Por qué está así:
 - **Sin `--platform manylinux...` dentro del Dockerfile:** como se construye con `docker build --platform linux/amd64`, pip ya corre en Linux x86_64 y elige solo los wheels compatibles con la glibc de la imagen.
 - **Un solo `RUN`:** menos capas.
 - **No hace falta `USER`:** Lambda ya ejecuta la función con un usuario sin privilegios.
+- **`ENV JOBLIB_MULTIPROCESSING=0`:** Lambda no tiene memoria compartida (`/dev/shm`). Con esta variable, joblib/scikit-learn trabajan en modo serial sin llenar los logs de warnings.
 
 `.dockerignore` (mínimo):
 
@@ -256,7 +274,7 @@ En los logs del contenedor revisa que **no** aparezca `InconsistentVersionWarnin
 
 ```bash
 # 3. Tag + push a ECR
-docker tag "$ECR_REPO:latest" "$IMAGE_URI"
+docker tag "${ECR_REPO}:latest" "$IMAGE_URI"
 docker push "$IMAGE_URI"
 
 aws ecr describe-images --repository-name "$ECR_REPO" --region "$AWS_REGION" \
@@ -286,13 +304,12 @@ aws lambda get-function-configuration --function-name "$FUNCTION_NAME" --region 
 aws lambda create-function-url-config --function-name "$FUNCTION_NAME" \
   --auth-type NONE --region "$AWS_REGION"
 
-# Permiso público para invocar por la URL
+# Una URL pública necesita LOS DOS permisos. Con uno solo responde 403:
+# "Invoking a Function URL requires both the lambda:InvokeFunctionUrl and lambda:InvokeFunction permissions"
 aws lambda add-permission --function-name "$FUNCTION_NAME" \
   --statement-id url-publica --action lambda:InvokeFunctionUrl \
   --principal "*" --function-url-auth-type NONE --region "$AWS_REGION"
 
-# En cuentas/regiones con la política nueva también hace falta lambda:InvokeFunction vía URL.
-# Si la URL responde 403 Forbidden, añade este segundo permiso:
 aws lambda add-permission --function-name "$FUNCTION_NAME" \
   --statement-id url-publica-invoke --action lambda:InvokeFunction \
   --principal "*" --invoked-via-function-url --region "$AWS_REGION"
@@ -302,7 +319,7 @@ export FUNCTION_URL=$(aws lambda get-function-url-config --function-name "$FUNCT
 echo "$FUNCTION_URL"
 ```
 
-En consola: **Configuration → Function URL → Create function URL → Auth type: NONE**.
+En consola: **Configuration → Function URL → Create function URL → Auth type: NONE**. La consola agrega los dos permisos por ti.
 
 Alternativa: API Gateway HTTP API. Es más configurable (dominio propio, throttling), pero para clase la Function URL basta.
 
@@ -321,14 +338,22 @@ head salida_predicciones.csv
 
 También se prueba en el navegador abriendo `${FUNCTION_URL}docs` → *Try it out*.
 
-- La primera llamada tarda más por el **cold start**: Lambda descarga la imagen e importa pandas y scikit-learn. Puede llevar 5 a 15 s.
+- La primera llamada tarda más por el **cold start**: Lambda descarga la imagen e importa pandas y scikit-learn. Valores medidos con esta API (imagen de ~380 MB, 2048 MB de memoria):
+
+  | Llamada | Tiempo |
+  |---|---|
+  | Primera tras crear la función | ~15 s |
+  | Cold start tras un `update-function-code` | ~3 s |
+  | Caliente | 0.5 s (100 ms dentro de Lambda) |
+
+- **Límite de 10 s de la fase INIT.** Si el primer arranque lo supera, el log muestra `INIT_REPORT Init Duration: 9999.67 ms Phase: init Status: timeout`. **No es un error:** Lambda repite el INIT dentro de la primera invocación y responde bien. Si pasa siempre, sube la memoria (más CPU) o reduce la imagen.
 - Límite de **6 MB** por request y por response en invocación síncrona. Para CSV grandes, sube el archivo a S3 y pasa la ruta.
 
 ## Paso 8 — Actualizar tras cambiar el código o el modelo
 
 ```bash
 docker build --platform linux/amd64 --provenance=false -t "$ECR_REPO" .
-docker tag "$ECR_REPO:latest" "$IMAGE_URI"
+docker tag "${ECR_REPO}:latest" "$IMAGE_URI"
 docker push "$IMAGE_URI"
 
 aws lambda update-function-code --function-name "$FUNCTION_NAME" \
@@ -359,7 +384,7 @@ aws iam detach-role-policy --role-name "$ROLE_NAME" \
   --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 aws iam delete-role --role-name "$ROLE_NAME"
 
-docker rmi "$IMAGE_URI" "$ECR_REPO:latest" 2>/dev/null; docker image prune -f
+docker rmi "$IMAGE_URI" "${ECR_REPO}:latest" 2>/dev/null; docker image prune -f
 ```
 
 Costo: Lambda cobra por invocación y por GB-segundo (hay capa gratuita), así que una función sin tráfico casi no cuesta. Lo que sí cobra en reposo es el almacenamiento de la imagen en ECR (por GB-mes), y la URL pública queda expuesta. Por eso se limpia.
@@ -368,6 +393,8 @@ Costo: Lambda cobra por invocación y por GB-segundo (hay capa gratuita), así q
 
 | Síntoma | Causa | Solución |
 |---|---|---|
+| `AccessDeniedException ... with an explicit deny in a service control policy` | La organización de tu cuenta bloquea esa región o servicio (SCP). Ningún permiso IAM lo arregla | Cambia `AWS_REGION` a una permitida (Paso 0) o pide acceso al administrador de la organización |
+| `No such image: api-...atest:latest` | zsh interpretó `$ECR_REPO:l...` como modificador | Usa llaves: `"${ECR_REPO}:latest"` |
 | `Cannot connect to the Docker daemon` | Docker Desktop cerrado | Ábrelo y repite |
 | `no basic auth credentials` / `denied` en el push | No hiciste login a ECR, caducó (12 h) o la región no coincide | Repite el login del Paso 4 con la misma `AWS_REGION` |
 | `name unknown: The repository ... does not exist` | No creaste el repo o lo creaste en otra región | Paso 3 en la región correcta |
@@ -381,7 +408,9 @@ Costo: Lambda cobra por invocación y por GB-segundo (hay capa gratuita), así q
 | `Read-only file system` | La app escribe en `/var/task` | Escribe en `/tmp` |
 | `Task timed out after 3.00 seconds` | Timeout por defecto | `--timeout 60` o más (máximo 900) |
 | `Runtime exited with error: signal: killed` | Memoria insuficiente | Sube `--memory-size` |
-| `403 Forbidden` / `{"Message":"Forbidden"}` en la URL | Faltan permisos de la Function URL | Los dos `add-permission` del Paso 6 |
+| `403` / `Forbidden. Invoking a Function URL requires both ... permissions` | Falta uno de los dos permisos de la Function URL | Los dos `add-permission` del Paso 6 |
+| `INIT_REPORT ... Status: timeout` en los logs | El primer arranque pasó los 10 s de INIT | Normal en el primer cold start; si se repite, sube la memoria |
+| `UserWarning: [Errno 13] Permission denied. joblib will operate in serial mode` | Lambda no tiene `/dev/shm` | `ENV JOBLIB_MULTIPROCESSING=0` en el Dockerfile |
 | La Lambda sigue con el código viejo | Hiciste push pero no actualizaste la función | `update-function-code` (Paso 8) |
 | Warning `InconsistentVersionWarning` de sklearn o predicciones raras | Versión de scikit-learn distinta a la del entrenamiento | Lee la versión del `.joblib` (sección de `requirements.txt`) y fíjala |
 | Cada request tarda segundos aunque la Lambda ya esté caliente | El modelo se carga dentro del endpoint | Cárgalo a nivel de módulo (fase INIT) |

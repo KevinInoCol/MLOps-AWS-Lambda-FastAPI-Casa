@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lambda como endpoint · Datapath</title>
+<meta name="description" content="MLOps · Módulo 3 Sesión 3: qué se despliega en AWS Lambda, Lambda vs SageMaker y cómo dimensionar la función.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#161719; --panel:#1D1F22; --panel2:#242629; --deep:#101113;
+  --line:#2E3136; --line2:#3A3E44;
+  --ink:#F4F5F6; --body:#C4C8CE; --muted:#878C94;
+  --coral:#FF7A50; --coral-t:rgba(255,122,80,.13);
+  --mint:#6FD3C7; --mint-t:rgba(111,211,199,.12);
+  --amber:#F0B85C; --amber-t:rgba(240,184,92,.12);
+  --rose:#F0776E; --rose-t:rgba(240,119,110,.12);
+  --disp:"Outfit",system-ui,sans-serif;
+  --sans:"Inter",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--deep);overflow:hidden}
+body{color:var(--body);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+::selection{background:var(--coral);color:#141517}
+
+/* ---------- escenario 16:9 escalado ---------- */
+.viewport{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+.stage{width:1280px;height:720px;position:relative;transform-origin:center center;flex:0 0 auto}
+.slide{position:absolute;inset:0;background:var(--bg);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  padding:58px 72px 64px;display:flex;flex-direction:column;opacity:0;visibility:hidden;transition:opacity .45s ease,visibility .45s}
+.slide.on{opacity:1;visibility:visible}
+.slide::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(900px 420px at 100% 0%,rgba(255,122,80,.07),transparent 60%)}
+
+/* aparición escalonada */
+.slide .r{opacity:0;transform:translateY(14px);transition:opacity .55s ease,transform .55s cubic-bezier(.2,.7,.2,1)}
+.slide.on .r{opacity:1;transform:none}
+.slide.on .r:nth-child(1){transition-delay:.05s}.slide.on .r:nth-child(2){transition-delay:.15s}
+.slide.on .r:nth-child(3){transition-delay:.25s}.slide.on .r:nth-child(4){transition-delay:.35s}
+.slide.on .r:nth-child(5){transition-delay:.45s}.slide.on .r:nth-child(6){transition-delay:.55s}
+.slide.on tbody tr{animation:fila .5s both}
+.slide.on tbody tr:nth-child(1){animation-delay:.35s}.slide.on tbody tr:nth-child(2){animation-delay:.45s}
+.slide.on tbody tr:nth-child(3){animation-delay:.55s}.slide.on tbody tr:nth-child(4){animation-delay:.65s}
+.slide.on tbody tr:nth-child(5){animation-delay:.75s}.slide.on tbody tr:nth-child(6){animation-delay:.85s}
+.slide.on tbody tr:nth-child(7){animation-delay:.95s}
+@keyframes fila{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}
+
+/* ---------- tipografía ---------- */
+.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--coral);margin:0 0 14px}
+h1{font-family:var(--disp);font-weight:700;color:var(--ink);font-size:62px;line-height:1.05;letter-spacing:-.03em;margin:0}
+h2{font-family:var(--disp);font-weight:600;color:var(--ink);font-size:38px;line-height:1.15;letter-spacing:-.02em;margin:0 0 8px}
+.lead{font-size:19px;line-height:1.6;color:var(--body);margin:0 0 26px;max-width:960px}
+.lead b,.note b{color:var(--ink);font-weight:600}
+code,.mono{font-family:var(--mono);font-size:.88em}
+code{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:1px 7px;color:var(--ink)}
+.hl{color:var(--coral)}
+
+/* ---------- tablas ---------- */
+table{width:100%;border-collapse:separate;border-spacing:0;font-size:16.5px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel)}
+th,td{text-align:left;padding:13px 18px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.45}
+th{font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);background:var(--deep);font-weight:500}
+tbody tr:last-child td{border-bottom:0}
+td:first-child{color:var(--ink);font-weight:600}
+th.lam,td.lam{background:var(--coral-t)}
+th.lam{color:var(--coral)}
+td .good{color:var(--mint)} td .bad{color:var(--rose)}
+
+/* ---------- piezas ---------- */
+.url{font-family:var(--mono);font-size:22px;color:var(--ink);background:var(--deep);border:1px solid var(--line2);border-radius:12px;padding:16px 24px;margin:0 0 14px}
+.url .dim{color:var(--muted)} .url .acc{color:var(--coral)}
+.flow{display:flex;align-items:center;gap:0;margin-top:36px}
+.node{flex:1 1 0;min-width:0;align-self:stretch;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px 14px 18px;display:flex;flex-direction:column;justify-content:center}
+.link{flex:0 0 166px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:0 8px;color:var(--line2);text-align:center}
+.link .ar{display:block;width:100%;color:var(--coral);opacity:.75}
+.link .lbl{display:flex;flex-direction:column;align-items:center;gap:5px;min-height:72px;justify-content:flex-end}
+.link .ar + .lbl{justify-content:flex-start}
+.link .step{font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--coral);font-weight:500}
+.link code{font-size:13px;padding:2px 7px}
+.link code.wrap{max-width:150px;text-align:center;line-height:1.5}
+.link .why{font-size:13px;color:var(--muted);line-height:1.35}
+.link .why code{font-size:11px}
+.slide.on .link .ar path:first-child{stroke-dasharray:6 6;animation:dash 1.2s linear infinite}
+.flownote{margin:34px 0 0;font-size:16.5px;color:var(--muted)}
+.flownote b{color:var(--ink)}
+.node .t{font-family:var(--disp);font-size:19px;white-space:nowrap;font-weight:600;color:var(--ink);margin:0 0 4px}
+.node .d{font-size:14px;color:var(--muted);margin:0;line-height:1.45}
+.node .tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--coral);margin:0 0 10px}
+.node.end{border-color:var(--coral);background:var(--coral-t)}
+.arrow{flex:0 0 46px;display:flex;align-items:center;justify-content:center;color:var(--line2)}
+.arrow svg{overflow:visible}
+.slide.on .arrow path{stroke-dasharray:6 6;animation:dash 1.2s linear infinite}
+@keyframes dash{to{stroke-dashoffset:-24}}
+
+.alert{display:flex;gap:18px;align-items:flex-start;background:var(--rose-t);border:1px solid rgba(240,119,110,.35);border-radius:12px;padding:18px 22px;margin-top:22px}
+.alert .ic{font-family:var(--disp);font-weight:700;font-size:22px;color:var(--rose);line-height:1}
+.alert p{margin:0;font-size:16.5px;line-height:1.55;color:var(--body)}
+.alert p b{color:var(--ink)}
+.tip{background:var(--mint-t);border-color:rgba(111,211,199,.35)} .tip .ic{color:var(--mint)}
+
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px 24px}
+.card h3{font-family:var(--disp);font-size:21px;font-weight:600;color:var(--ink);margin:0 0 12px}
+.card p{margin:0 0 12px;font-size:16px;line-height:1.55}
+pre{margin:0;font-family:var(--mono);font-size:14px;line-height:1.65;background:var(--deep);border:1px solid var(--line);border-radius:10px;padding:16px 18px;color:var(--body);white-space:pre-wrap}
+pre .c{color:var(--muted)} pre .k{color:var(--coral)} pre .v{color:var(--mint)}
+.path{font-family:var(--mono);font-size:14.5px;color:var(--ink);line-height:2}
+.path span{color:var(--coral)}
+
+/* niveles memoria → CPU (altura proporcional a la memoria) */
+.levels{display:grid;grid-template-columns:repeat(5,1fr);gap:18px;align-items:end;margin:4px 0 6px}
+.lv{text-align:center}
+.lv .bar{height:190px;background:var(--panel);border:1px solid var(--line);border-radius:10px;display:flex;align-items:flex-end;padding:6px;margin-bottom:12px}
+.lv .bar i{display:block;width:100%;height:0;min-height:0;border-radius:6px;background:linear-gradient(0deg,var(--mint),rgba(111,211,199,.55));transition:height 1.2s cubic-bezier(.2,.7,.2,1) .4s}
+.slide.on .lv .bar i{height:var(--h);min-height:6px}
+.lv b{display:block;font-family:var(--disp);font-size:21px;color:var(--ink);font-weight:600}
+.lv span{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.lv.key .bar{border-color:var(--coral);background:var(--coral-t)}
+.lv.key .bar i{background:linear-gradient(0deg,var(--coral),rgba(255,122,80,.6))}
+.lv.key b{color:var(--coral)}
+
+/* línea REPORT */
+.report{font-family:var(--mono);font-size:16px;background:var(--deep);border:1px solid var(--line2);border-radius:12px;padding:18px 22px;color:var(--muted);line-height:1.9}
+.report .f{color:var(--ink);border-bottom:2px solid var(--coral);padding-bottom:1px}
+.steps{list-style:none;padding:0;margin:24px 0 0;display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.steps li{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;font-size:15.5px;line-height:1.5}
+.steps li .n{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--coral);display:block;margin-bottom:8px}
+.steps li b{color:var(--ink)}
+
+/* portada */
+.cover{justify-content:center}
+.cover .logo{display:flex;align-items:center;gap:10px;margin-bottom:46px}
+.cover .logo span{font-family:var(--disp);font-size:22px;font-weight:600;color:var(--ink);letter-spacing:-.02em}
+.cover h1 span{color:var(--coral)}
+.cover .sub{font-size:21px;color:var(--body);margin:22px 0 0;max-width:820px;line-height:1.55}
+.cover .meta{margin-top:54px;font-family:var(--mono);font-size:13px;color:var(--muted);letter-spacing:.06em}
+
+/* resumen */
+.sum{list-style:none;padding:0;margin:8px 0 0;display:grid;gap:14px}
+.sum li{display:flex;gap:18px;align-items:baseline;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 22px;font-size:18px}
+.sum li .n{font-family:var(--mono);color:var(--coral);font-size:14px;flex:0 0 28px}
+.sum li b{color:var(--ink)}
+
+/* pie de cada slide */
+.foot{position:absolute;left:72px;right:210px;bottom:24px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#5D626A}
+
+/* ---------- controles ---------- */
+.progress{position:fixed;left:0;top:0;height:3px;background:var(--coral);width:0;transition:width .35s ease;z-index:5}
+.nav{position:fixed;right:18px;bottom:16px;display:flex;align-items:center;gap:8px;z-index:5;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.nav button{width:36px;height:36px;border-radius:9px;border:1px solid var(--line2);background:var(--panel);color:var(--ink);cursor:pointer;font-size:16px;line-height:1}
+.nav button:hover{border-color:var(--coral);color:var(--coral)}
+.nav button:focus-visible{outline:2px solid var(--coral);outline-offset:2px}
+.hint{position:fixed;left:18px;bottom:20px;font-family:var(--mono);font-size:11px;color:#4C5158;z-index:5}
+@media (max-width:700px){.hint{display:none}}
+@media (prefers-reduced-motion:reduce){
+  .slide,.slide .r,.lv .bar i{transition:none!important}
+  .slide.on tbody tr,.slide.on .arrow path,.slide.on .link .ar path{animation:none!important}
+}
+
+/* ---------- sección 04: frontend ↔ backend ---------- */
+.arch{display:grid;grid-template-columns:1fr 150px 1.35fr;gap:0;align-items:stretch;margin-top:6px}
+.zone{border:1px dashed var(--line2);border-radius:14px;padding:16px 18px 18px;position:relative}
+.zone .zt{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:0 0 12px}
+.zone.aws{border-color:rgba(255,122,80,.45);background:rgba(255,122,80,.035)}
+.zone.aws .zt{color:var(--coral)}
+.stack{display:flex;flex-direction:column;gap:10px}
+.row{display:flex;align-items:center;gap:10px}
+.box{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.box .t{font-family:var(--disp);font-size:18px;font-weight:600;color:var(--ink);margin:0}
+.box .d{font-size:13px;color:var(--muted);margin:2px 0 0;line-height:1.4}
+.box.hl{border-color:var(--mint);background:var(--mint-t)}
+.box.end{border-color:var(--coral);background:var(--coral-t)}
+.vdown{display:flex;justify-content:center;color:var(--line2);font-size:13px;font-family:var(--mono);gap:8px;align-items:center}
+.vdown span{color:var(--muted)}
+.inner{display:flex;align-items:center;gap:8px}
+.inner .box{padding:10px 12px}
+.inner .sep{color:var(--coral);font-family:var(--mono)}
+.bridge{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:0 10px;text-align:center}
+.bridge .step{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--coral)}
+.bridge svg{width:100%;color:var(--coral)}
+.bridge .why{font-size:12.5px;color:var(--muted);line-height:1.4}
+.slide.on .bridge path.flow-l{stroke-dasharray:6 6;animation:dash 1.2s linear infinite}
+.slide.on .bridge path.flow-r{stroke-dasharray:6 6;animation:dash 1.2s linear infinite reverse}
+.chips{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:20px}
+.chip{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 16px;font-size:14.5px;line-height:1.5}
+.chip b{color:var(--ink)}
+
+/* diagrama de secuencia */
+.seq{position:relative;margin-top:4px}
+.seq .lanes{display:grid;grid-template-columns:repeat(4,1fr);text-align:center;margin-bottom:6px}
+.seq .lane{font-family:var(--disp);font-size:16px;font-weight:600;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px 6px;margin:0 22px}
+.seq .lane small{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--muted);font-weight:400;margin-top:2px}
+.seq .lane.aws{border-color:rgba(255,122,80,.5)}
+.seq .life{position:absolute;top:56px;bottom:0;left:0;right:0;display:grid;grid-template-columns:repeat(4,1fr);pointer-events:none}
+.seq .life i{border-left:1px dashed var(--line2);margin-left:50%}
+.seq .msgs{position:relative;display:grid;grid-template-columns:repeat(4,1fr);row-gap:4px}
+.msg{position:relative;height:33px;display:flex;flex-direction:column;justify-content:flex-end;padding:0 0 0 0}
+.msg .lab{font-size:13px;color:var(--body);text-align:center;line-height:1.25;padding:0 6px 3px;white-space:nowrap}
+.msg .lab code{font-size:11.5px;padding:0 5px}
+.msg .ln{height:2px;background:var(--coral);position:relative;margin:0 calc(50% / var(--span))}
+.msg .ln::after{content:"";position:absolute;right:-1px;top:-5px;border:6px solid transparent;border-left:9px solid var(--coral);border-right:0}
+.msg.back .ln{background:none;border-top:2px dashed var(--mint)}
+.msg.back .ln::after{right:auto;left:-1px;top:-7px;border-left:0;border-right:9px solid var(--mint)}
+.msg.back .lab{color:var(--mint)}
+.msg.self{justify-content:center}
+.msg.self .lab{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 10px;color:var(--muted);font-size:12.5px;margin:0 auto}
+.msg .n{font-family:var(--mono);font-size:10.5px;color:var(--coral);margin-right:6px}
+.msg.back .n{color:var(--mint)}
+.slide.on .msg{animation:fila .45s both}
+.slide.on .msg:nth-child(1){animation-delay:.3s}.slide.on .msg:nth-child(2){animation-delay:.45s}
+.slide.on .msg:nth-child(3){animation-delay:.6s}.slide.on .msg:nth-child(4){animation-delay:.75s}
+.slide.on .msg:nth-child(5){animation-delay:.9s}.slide.on .msg:nth-child(6){animation-delay:1.05s}
+.slide.on .msg:nth-child(7){animation-delay:1.2s}.slide.on .msg:nth-child(8){animation-delay:1.35s}
+
+/* contrato lado a lado */
+.code2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.code2 .card{padding:18px 20px}
+.code2 h3{font-size:18px;margin:0 0 4px}
+.code2 .sub{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin:0 0 12px}
+.code2 pre{font-size:13.5px;line-height:1.7}
+.m1{background:rgba(255,122,80,.18);color:var(--ink);border-radius:4px;padding:0 3px}
+.m2{background:rgba(111,211,199,.18);color:var(--ink);border-radius:4px;padding:0 3px}
+.m3{background:rgba(240,184,92,.2);color:var(--ink);border-radius:4px;padding:0 3px}
+.legend{display:flex;gap:22px;flex-wrap:wrap;margin-top:16px;font-size:14.5px}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+
+/* streamlit vs react */
+.who{display:grid;gap:16px;margin-top:4px}
+.lane2{display:grid;grid-template-columns:150px 1fr;gap:18px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.lane2 .name{font-family:var(--disp);font-size:22px;font-weight:600;color:var(--ink)}
+.lane2 .name small{display:block;font-family:var(--mono);font-size:11px;color:var(--muted);font-weight:400;letter-spacing:.06em;margin-top:4px}
+.path2{display:flex;align-items:center;gap:0}
+.path2 .box{flex:0 0 auto;min-width:150px;text-align:center}
+.path2 .wire{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;min-width:110px;padding:0 6px}
+.path2 .wire .l{font-family:var(--mono);font-size:11px;color:var(--muted);text-align:center;line-height:1.3}
+.path2 .wire .line{width:100%;height:2px;background:var(--line2);position:relative}
+.path2 .wire .line::after{content:"";position:absolute;right:-1px;top:-5px;border:6px solid transparent;border-left:9px solid var(--line2);border-right:0}
+.path2 .wire.hot .line{background:var(--coral)}
+.path2 .wire.hot .line::after{border-left-color:var(--coral)}
+.path2 .wire.hot .l{color:var(--coral)}
+.badge{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;border-radius:999px;padding:4px 10px;margin-left:14px;white-space:nowrap}
+.badge.ok{color:var(--mint);background:var(--mint-t);border:1px solid rgba(111,211,199,.4)}
+.badge.warn{color:var(--amber);background:var(--amber-t);border:1px solid rgba(240,184,92,.4)}
+table.compact{font-size:14.5px;margin-top:16px}
+table.compact th,table.compact td{padding:9px 14px}
+td.code-cell code{font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+
+<div class="viewport">
+<div class="stage" id="stage">
+
+  <!-- 1 · PORTADA -->
+  <section class="slide cover" data-title="Portada">
+    <div class="r logo">
+      <svg width="34" height="24" viewBox="0 0 34 24" aria-hidden="true">
+        <path d="M14 4c4 0 7 2.6 7.6 6.2 3 .2 5.4 2.5 5.4 5.4 0 3-2.6 5.4-5.8 5.4H12c-3.9 0-7-2.9-7-6.5 0-3 2.1-5.5 5-6.2C10.6 5.6 12.1 4 14 4z" fill="#FF7A50"/>
+        <rect x="0" y="8" width="3" height="3" fill="#FF7A50" opacity=".9"/>
+        <rect x="4" y="14" width="3" height="3" fill="#FF7A50" opacity=".7"/>
+        <rect x="0" y="17" width="2.4" height="2.4" fill="#FF7A50" opacity=".5"/>
+        <rect x="5" y="4" width="2.4" height="2.4" fill="#FF7A50" opacity=".6"/>
+      </svg>
+      <span>Datapath</span>
+    </div>
+    <p class="r kicker">MLOps · Módulo 3 · Sesión 3</p>
+    <h1 class="r">Tu modelo en <span>AWS Lambda</span>:<br>¿qué estás desplegando?</h1>
+    <p class="r sub">Un endpoint serverless para la API de precio de casas: qué obtienes, en qué se diferencia de SageMaker y cómo dimensionarlo.</p>
+    <p class="r meta">FastAPI · Mangum · Docker · Amazon ECR · Lambda · Function URL</p>
+  </section>
+
+  <!-- 2 · ES UN ENDPOINT -->
+  <section class="slide" data-title="Es un endpoint">
+    <p class="r kicker">01 · Qué obtienes</p>
+    <h2 class="r">Desplegar = obtener un endpoint HTTPS público</h2>
+    <p class="r lead">La <b>Function URL</b> es la puerta de entrada a <b>toda</b> tu API FastAPI. Una sola URL, todas las rutas detrás.</p>
+    <div class="r url"><span class="dim">https://</span><span class="acc">&lt;id-aleatorio&gt;</span><span class="dim">.lambda-url.</span>us-east-1<span class="dim">.on.aws/</span></div>
+    <div class="r flow">
+      <div class="node"><p class="tag">Tu código</p><p class="t">Dockerfile</p><p class="d">FastAPI + Mangum + modelo .joblib</p></div>
+      <div class="link">
+        <div class="lbl"><span class="step">① Build</span><code>docker build</code><span class="why">crea la imagen<br>en tu PC</span></div>
+        <svg class="ar" width="100%" height="14" viewBox="0 0 120 14" preserveAspectRatio="none"><path d="M2 7h108" stroke="currentColor" stroke-width="2" fill="none" vector-effect="non-scaling-stroke"/><path d="M106 2l8 5-8 5" stroke="currentColor" stroke-width="2" fill="none" vector-effect="non-scaling-stroke"/></svg>
+        <div class="lbl"><span class="step">② Push</span><code>docker push</code><span class="why">sube la imagen<br>a ECR</span></div>
+      </div>
+      <div class="node"><p class="tag">Registro</p><p class="t">Amazon ECR</p><p class="d">Guarda la imagen (repo privado)</p></div>
+      <div class="link">
+        <div class="lbl"><span class="step">③ Crear función</span><code>create-function</code></div>
+        <svg class="ar" width="100%" height="14" viewBox="0 0 120 14" preserveAspectRatio="none"><path d="M2 7h108" stroke="currentColor" stroke-width="2" fill="none" vector-effect="non-scaling-stroke"/><path d="M106 2l8 5-8 5" stroke="currentColor" stroke-width="2" fill="none" vector-effect="non-scaling-stroke"/></svg>
+        <div class="lbl"><span class="why">Lambda toma la imagen<br>con <code>--image-uri</code></span></div>
+      </div>
+      <div class="node"><p class="tag">Cómputo</p><p class="t">AWS Lambda</p><p class="d">Corre la imagen bajo demanda</p></div>
+      <div class="link">
+        <div class="lbl"><span class="step">④ Exponer</span><code class="wrap">create-function-<wbr>url-config</code></div>
+        <svg class="ar" width="100%" height="14" viewBox="0 0 120 14" preserveAspectRatio="none"><path d="M2 7h108" stroke="currentColor" stroke-width="2" fill="none" vector-effect="non-scaling-stroke"/><path d="M106 2l8 5-8 5" stroke="currentColor" stroke-width="2" fill="none" vector-effect="non-scaling-stroke"/></svg>
+        <div class="lbl"><span class="why">crea la URL pública<br>+ permisos</span></div>
+      </div>
+      <div class="node end"><p class="tag">Endpoint</p><p class="t">Function URL</p><p class="d">HTTPS público para clientes</p></div>
+    </div>
+    <p class="r flownote">Al cambiar el código se repiten <b>① build</b> y <b>② push</b>, y luego <code>update-function-code</code>: el push solo no actualiza la Lambda.</p>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+  <!-- 3 · RUTAS -->
+  <section class="slide" data-title="Rutas">
+    <p class="r kicker">01 · Qué obtienes</p>
+    <h2 class="r">Las rutas de tu API detrás de esa URL</h2>
+    <p class="r lead">Mangum traduce cada request HTTP que llega a Lambda en una llamada a FastAPI. Para el cliente es una API normal.</p>
+    <table class="r">
+      <thead><tr><th style="width:44%">Ruta</th><th>Para qué sirve</th></tr></thead>
+      <tbody>
+        <tr><td><code>GET /</code></td><td>Comprobar que la API está viva (health check)</td></tr>
+        <tr><td><code>GET /docs</code></td><td>Swagger UI: probar la API desde el navegador, sin código</td></tr>
+        <tr><td><code>POST /obtener-datos-de-usuario-y-predecir</code></td><td>Subir un CSV con casas y recibir otro CSV con las predicciones de precio</td></tr>
+      </tbody>
+    </table>
+    <div class="r alert tip"><span class="ic">→</span><p>Prueba rápida: abre <code>&lt;tu-url&gt;/docs</code> en el navegador, elige el endpoint POST, <b>Try it out</b> y sube <code>datos_prueba.csv</code>.</p></div>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+  <!-- 4 · LAMBDA VS SAGEMAKER -->
+  <section class="slide" data-title="Lambda vs SageMaker">
+    <p class="r kicker">02 · No confundir</p>
+    <h2 class="r">Endpoint en Lambda vs endpoint en SageMaker</h2>
+    <p class="r lead">Los dos te dan una URL para predecir, pero el modelo de cómputo y de cobro es <b>totalmente distinto</b>.</p>
+    <table class="r">
+      <thead><tr><th style="width:20%"></th><th class="lam">Lambda + Function URL</th><th>Endpoint de SageMaker</th></tr></thead>
+      <tbody>
+        <tr><td>Infraestructura</td><td class="lam">Serverless: no hay servidor encendido</td><td>Una instancia encendida 24/7</td></tr>
+        <tr><td>Cobro</td><td class="lam">Por request y por milisegundo de ejecución (con capa gratuita)</td><td>Por hora, aunque nadie lo use</td></tr>
+        <tr><td>Sin tráfico</td><td class="lam"><span class="good">Escala a cero → casi $0</span></td><td><span class="bad">Sigue cobrando</span></td></tr>
+        <tr><td>Primera llamada</td><td class="lam"><span class="bad">Cold start de unos segundos</span></td><td><span class="good">Respuesta inmediata</span></td></tr>
+        <tr><td>Ideal para</td><td class="lam">APIs con tráfico esporádico y modelos livianos, como este</td><td>Modelos pesados, GPU, tráfico constante</td></tr>
+      </tbody>
+    </table>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+  <!-- 5 · URL PÚBLICA -->
+  <section class="slide" data-title="URL pública">
+    <p class="r kicker">02 · Precaución</p>
+    <h2 class="r">La Function URL es pública</h2>
+    <p class="r lead">Con <code>--auth-type NONE</code> <b>cualquiera que tenga la URL puede invocarla</b>, y cada invocación se cobra en tu cuenta.</p>
+    <div class="r cols">
+      <div class="card">
+        <h3>En clase</h3>
+        <p>Está bien usar <code>NONE</code> para probar rápido desde el navegador y con <code>curl</code>.</p>
+        <p>No compartas la URL fuera del aula.</p>
+      </div>
+      <div class="card">
+        <h3>En producción</h3>
+        <p><code>--auth-type AWS_IAM</code> (requests firmadas) o un <b>API Gateway</b> con API keys, throttling y dominio propio.</p>
+      </div>
+    </div>
+    <div class="r alert"><span class="ic">!</span><p><b>Al terminar la clase, borra todo:</b> Function URL, función, repositorio de ECR y rol IAM (Paso 9 de la skill <code>/aws-lambda-fastapi-deploy</code>).</p></div>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+  <!-- 6 · PRESTACIONES -->
+  <section class="slide" data-title="Prestaciones">
+    <p class="r kicker">03 · Dimensionar</p>
+    <h2 class="r">No eliges una máquina: eliges memoria</h2>
+    <p class="r lead">No hay tipo de instancia ni manifiesto. La configuración vive <b>en la propia función</b>. No hay GPU en Lambda.</p>
+    <table class="r">
+      <thead><tr><th style="width:22%">Prestación</th><th style="width:40%">Rango</th><th class="lam">Esta API (precio de casas)</th></tr></thead>
+      <tbody>
+        <tr><td>Memoria</td><td><code>--memory-size</code> · 128 MB a 10 240 MB</td><td class="lam">2048 MB para empezar</td></tr>
+        <tr><td>CPU</td><td>Ligada a la memoria · hasta 6 vCPU</td><td class="lam">Se ajusta sola con la memoria</td></tr>
+        <tr><td>Timeout</td><td><code>--timeout</code> · 1 a 900 s (15 min)</td><td class="lam">60 s</td></tr>
+        <tr><td>Disco <code>/tmp</code></td><td><code>--ephemeral-storage</code> · 512 MB a 10 GB</td><td class="lam">512 MB (no escribimos en disco)</td></tr>
+        <tr><td>Arquitectura</td><td><code>x86_64</code> o <code>arm64</code> (Graviton, más barata)</td><td class="lam">x86_64</td></tr>
+        <tr><td>Concurrencia</td><td>Reservada (tope) o aprovisionada (siempre caliente, costo fijo)</td><td class="lam">Ninguna para clase</td></tr>
+      </tbody>
+    </table>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+  <!-- 7 · MEMORIA = CPU -->
+  <section class="slide" data-title="Memoria y CPU">
+    <p class="r kicker">03 · Dimensionar</p>
+    <h2 class="r">Más memoria = más CPU</h2>
+    <p class="r lead">AWS asigna CPU <b>proporcional</b> a la memoria. Por eso subir memoria a veces sale <b>más barato</b>: la función termina antes y pagas menos milisegundos.</p>
+    <div class="r levels">
+      <div class="lv"><div class="bar"><i style="--h:4%"></i></div><b>128 MB</b><span>fracción de vCPU</span></div>
+      <div class="lv"><div class="bar"><i style="--h:17%"></i></div><b>1769 MB</b><span>= 1 vCPU completa</span></div>
+      <div class="lv key"><div class="bar"><i style="--h:20%"></i></div><b>2048 MB</b><span>~1.2 vCPU · esta API</span></div>
+      <div class="lv"><div class="bar"><i style="--h:50%"></i></div><b>5308 MB</b><span>~3 vCPU</span></div>
+      <div class="lv"><div class="bar"><i style="--h:100%"></i></div><b>10 240 MB</b><span>6 vCPU · máximo</span></div>
+    </div>
+    <div class="r alert tip"><span class="ic">→</span><p>Regla práctica: con pandas + scikit-learn, por debajo de ~1 GB el <b>cold start</b> se vuelve lento. Empieza en 2048 MB y ajusta mirando los logs.</p></div>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+  <!-- 8 · DÓNDE SE CONFIGURA -->
+  <section class="slide" data-title="Dónde se configura">
+    <p class="r kicker">03 · Dimensionar</p>
+    <h2 class="r">¿Dónde se cambian las prestaciones?</h2>
+    <p class="r lead">Dos caminos, mismo resultado. Se puede cambiar en cualquier momento, sin volver a construir la imagen.</p>
+    <div class="r cols">
+      <div class="card">
+        <h3>Consola de AWS</h3>
+        <p class="path">Lambda <span>→</span> tu función<br><span>→</span> Configuration<br><span>→</span> General configuration<br><span>→</span> Edit</p>
+      </div>
+      <div class="card">
+        <h3>AWS CLI</h3>
+<pre><span class="k">aws lambda</span> update-function-configuration \
+  --function-name <span class="v">"$FUNCTION_NAME"</span> \
+  --memory-size <span class="v">3008</span> \
+  --timeout <span class="v">120</span> \
+  --ephemeral-storage Size=<span class="v">1024</span></pre>
+      </div>
+    </div>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+  <!-- 9 · CÓMO SABER CUÁNTO -->
+  <section class="slide" data-title="Cuánto necesito">
+    <p class="r kicker">03 · Dimensionar</p>
+    <h2 class="r">¿Cómo sé cuánto necesito? Mira los logs</h2>
+    <p class="r lead">Cada invocación deja una línea <code>REPORT</code> en CloudWatch: <code>aws logs tail /aws/lambda/$FUNCTION_NAME</code></p>
+    <div class="r report">REPORT RequestId: 42a7…&nbsp; <span class="f">Duration: 160 ms</span>&nbsp; Billed Duration: 161 ms<br><span class="f">Memory Size: 2048 MB</span>&nbsp; <span class="f">Max Memory Used: 410 MB</span>&nbsp; <span class="f">Init Duration: 4500 ms</span></div>
+    <ul class="r steps">
+      <li><span class="n">MAX MEMORY USED</span><b>Muy por debajo</b> del Memory Size → puedes bajar memoria (pero recuerda: menos memoria = menos CPU).</li>
+      <li><span class="n">CERCA DEL LÍMITE</span><b>Sube la memoria</b> antes de que la función muera con <code>signal: killed</code>.</li>
+      <li><span class="n">INIT DURATION ALTO</span>Es el <b>cold start</b>. Sube memoria o usa concurrencia aprovisionada si importa la latencia.</li>
+    </ul>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+  <!-- 04a · ARQUITECTURA -->
+  <section class="slide" data-title="Arquitectura">
+    <p class="r kicker">04 · Frontend ↔ Backend</p>
+    <h2 class="r">La arquitectura completa</h2>
+    <p class="r lead">Dos aplicaciones <b>separadas</b> que solo se hablan por HTTP. El frontend no importa el modelo ni el código del backend: solo conoce su <b>URL</b>.</p>
+    <div class="r arch">
+      <div class="zone">
+        <p class="zt">Tu PC · Frontend</p>
+        <div class="stack">
+          <div class="box"><p class="t">Navegador</p><p class="d">localhost:8501 · el usuario sube el CSV</p></div>
+          <div class="vdown">▼ <span>la interfaz</span></div>
+          <div class="box hl"><p class="t">Streamlit · app.py</p><p class="d">Servidor Python · lee <code>API_URL</code> del <code>.env</code></p></div>
+        </div>
+      </div>
+      <div class="bridge">
+        <span class="step">HTTPS</span>
+        <svg height="40" viewBox="0 0 120 40" preserveAspectRatio="none"><path class="flow-l" d="M2 12h108" stroke="currentColor" stroke-width="2" fill="none" vector-effect="non-scaling-stroke"/><path d="M104 7l8 5-8 5" stroke="currentColor" stroke-width="2" fill="none" vector-effect="non-scaling-stroke"/><path class="flow-r" d="M10 30h108" stroke="#6FD3C7" stroke-width="2" fill="none" vector-effect="non-scaling-stroke"/><path d="M16 25l-8 5 8 5" stroke="#6FD3C7" stroke-width="2" fill="none" vector-effect="non-scaling-stroke"/></svg>
+        <span class="why"><b style="color:var(--coral)">request</b>: CSV<br><b style="color:var(--mint)">response</b>: CSV + precios</span>
+      </div>
+      <div class="zone aws">
+        <p class="zt">AWS · us-east-2 · Backend</p>
+        <div class="stack">
+          <div class="box end"><p class="t">Function URL</p><p class="d">https://&lt;id&gt;.lambda-url.us-east-2.on.aws</p></div>
+          <div class="vdown">▼ <span>invoca</span></div>
+          <div class="box"><p class="t">AWS Lambda · imagen de ECR</p>
+            <div class="inner" style="margin-top:8px">
+              <div class="box"><p class="d" style="margin:0"><b style="color:var(--ink)">Mangum</b><br>evento → HTTP</p></div><span class="sep">→</span>
+              <div class="box"><p class="d" style="margin:0"><b style="color:var(--ink)">FastAPI</b><br>valida y arma la respuesta</p></div><span class="sep">→</span>
+              <div class="box"><p class="d" style="margin:0"><b style="color:var(--ink)">Modelo</b><br>.joblib · predict</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="r chips">
+      <div class="chip"><b>Frontend:</b> interfaz y experiencia de usuario. No sabe nada de scikit-learn.</div>
+      <div class="chip"><b>Backend:</b> validación, modelo y predicción. No sabe nada de botones ni tablas.</div>
+      <div class="chip"><b>Desacoplados:</b> cambias uno sin tocar el otro, mientras respetes el contrato.</div>
+    </div>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+  <!-- 04b · SECUENCIA -->
+  <section class="slide" data-title="Paso a paso">
+    <p class="r kicker">04 · Frontend ↔ Backend</p>
+    <h2 class="r">Una predicción, paso a paso</h2>
+    <p class="r lead" style="margin-bottom:14px">Qué ocurre desde que el usuario pulsa <b>Predecir</b> hasta que ve los precios.</p>
+    <div class="r seq">
+      <div class="lanes">
+        <div class="lane">Usuario<small>navegador</small></div>
+        <div class="lane">Streamlit<small>tu PC · app.py</small></div>
+        <div class="lane aws">Lambda + FastAPI<small>AWS · main.py</small></div>
+        <div class="lane aws">Modelo<small>pipeline .joblib</small></div>
+      </div>
+      <div class="life"><i></i><i></i><i></i><i></i></div>
+      <div class="msgs">
+        <div class="msg" style="grid-column:1/3;--span:2"><div class="lab"><span class="n">1</span>sube <code>datos_prueba.csv</code></div><div class="ln"></div></div>
+        <div class="msg self" style="grid-column:2/3"><div class="lab"><span class="n">2</span>vista previa · no viaja por la red</div></div>
+        <div class="msg" style="grid-column:1/3;--span:2"><div class="lab"><span class="n">3</span>clic en <b>Predecir</b></div><div class="ln"></div></div>
+        <div class="msg" style="grid-column:2/4;--span:2"><div class="lab"><span class="n">4</span><code>POST /obtener-…-predecir</code> · multipart, campo <code>file</code></div><div class="ln"></div></div>
+        <div class="msg" style="grid-column:3/5;--span:2"><div class="lab"><span class="n">5</span>valida columnas → <code>PIPELINE.predict()</code></div><div class="ln"></div></div>
+        <div class="msg back" style="grid-column:3/5;--span:2"><div class="lab"><span class="n">6</span>precios en log → <code>np.exp</code></div><div class="ln"></div></div>
+        <div class="msg back" style="grid-column:2/4;--span:2"><div class="lab"><span class="n">7</span><code>200</code> · <code>text/csv</code> con predicciones</div><div class="ln"></div></div>
+        <div class="msg back" style="grid-column:1/3;--span:2"><div class="lab"><span class="n">8</span>métricas, tabla y <b>Descargar CSV</b></div><div class="ln"></div></div>
+      </div>
+    </div>
+    <div class="r alert tip" style="margin-top:12px;padding:12px 20px"><span class="ic">→</span><p>El paso <b>4 → 7</b> es el único que cruza internet: ~0.5 s en caliente y hasta ~15 s la primera vez (<b>cold start</b>). Por eso el frontend espera hasta 90 s antes de rendirse.</p></div>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+  <!-- 04c · CONTRATO -->
+  <section class="slide" data-title="El contrato">
+    <p class="r kicker">04 · Frontend ↔ Backend</p>
+    <h2 class="r">El contrato: lo único que comparten</h2>
+    <p class="r lead" style="margin-bottom:18px">El frontend y el backend son proyectos distintos. Funcionan juntos porque estas piezas <b>coinciden exactamente</b>.</p>
+    <div class="r code2">
+      <div class="card">
+        <h3>Frontend · Streamlit</h3><p class="sub">Frontend-Streamlit-…/app.py</p>
+<pre>API_URL = os.getenv(<span class="m1">"API_URL"</span>)   <span class="c"># .env</span>
+
+r = requests.post(
+    f"{API_URL}<span class="m1">/obtener-datos-de-usuario-y-predecir</span>",
+    files={<span class="m2">"file"</span>: (nombre, contenido, <span class="m3">"text/csv"</span>)},
+    timeout=90,
+)
+df = pd.read_csv(io.BytesIO(r.content))</pre>
+      </div>
+      <div class="card">
+        <h3>Backend · FastAPI</h3><p class="sub">Backend-App-…/application/main.py</p>
+<pre>@app.post(<span class="m1">"/obtener-datos-de-usuario-y-predecir"</span>)
+def publicar_mensaje(<span class="m2">file</span>: UploadFile = File(...)):
+    datos = pd.read_csv(<span class="m2">file</span>.file)
+    ...
+    return Response(
+        content=csv,
+        media_type=<span class="m3">"text/csv"</span>,
+    )</pre>
+      </div>
+    </div>
+    <div class="r legend">
+      <span><i style="background:rgba(255,122,80,.5)"></i><b style="color:var(--ink)">Ruta</b> · URL base en <code>.env</code> + misma ruta</span>
+      <span><i style="background:rgba(111,211,199,.5)"></i><b style="color:var(--ink)">Campo</b> · <code>"file"</code> = parámetro <code>file</code></span>
+      <span><i style="background:rgba(240,184,92,.55)"></i><b style="color:var(--ink)">Formato</b> · CSV de ida y de vuelta</span>
+    </div>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+  <!-- 04d · STREAMLIT VS REACT -->
+  <section class="slide" data-title="Streamlit vs React">
+    <p class="r kicker">04 · Frontend ↔ Backend</p>
+    <h2 class="r">¿Quién hace la llamada al backend?</h2>
+    <p class="r lead" style="margin-bottom:16px">Depende del frontend, y eso decide si necesitas <b>CORS</b>.</p>
+    <div class="r who">
+      <div class="lane2">
+        <div class="name">Streamlit<small>Python</small></div>
+        <div class="path2">
+          <div class="box"><p class="t">Navegador</p></div>
+          <div class="wire"><span class="l">websocket</span><div class="line"></div></div>
+          <div class="box hl"><p class="t">Servidor Streamlit</p></div>
+          <div class="wire hot"><span class="l">HTTPS · requests</span><div class="line"></div></div>
+          <div class="box end"><p class="t">Lambda</p></div>
+          <span class="badge ok">Sin CORS</span>
+        </div>
+      </div>
+      <div class="lane2">
+        <div class="name">React<small>JavaScript</small></div>
+        <div class="path2">
+          <div class="box hl"><p class="t">Navegador (JS)</p></div>
+          <div class="wire hot"><span class="l">HTTPS · fetch, desde otro dominio</span><div class="line"></div></div>
+          <div class="box end"><p class="t">Lambda</p></div>
+          <span class="badge warn">Necesita CORS</span>
+        </div>
+      </div>
+    </div>
+    <table class="r compact">
+      <thead><tr><th style="width:22%"></th><th>Streamlit</th><th>React (Vite)</th></tr></thead>
+      <tbody>
+        <tr><td>La llamada sale de</td><td>El <b>servidor</b> Python</td><td>El <b>navegador</b> del usuario</td></tr>
+        <tr><td>URL del backend</td><td class="code-cell"><code>API_URL</code> en <code>.env</code> (privada del servidor)</td><td class="code-cell"><code>VITE_API_URL</code> (se incrusta en el JS, visible para todos)</td></tr>
+        <tr><td>Backend necesita</td><td>Nada extra</td><td class="code-cell"><code>CORSMiddleware</code> con el dominio del frontend</td></tr>
+        <tr><td>Se publica en</td><td>Streamlit Cloud · Cloud Run</td><td>Vercel · S3 + CloudFront</td></tr>
+      </tbody>
+    </table>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+  <!-- 04e · ERRORES -->
+  <section class="slide" data-title="Errores HTTP">
+    <p class="r kicker">04 · Frontend ↔ Backend</p>
+    <h2 class="r">Cuando algo sale mal: el código HTTP lo dice</h2>
+    <p class="r lead" style="margin-bottom:14px">El backend responde un <b>código</b> + <code>detail</code>; el frontend lo traduce para el usuario.</p>
+    <table class="r compact" style="margin-top:0">
+      <thead><tr><th style="width:11%">Código</th><th style="width:34%">Qué pasó</th><th>Qué hace el frontend</th></tr></thead>
+      <tbody>
+        <tr><td><span class="good">200</span></td><td>Predicción correcta</td><td>Muestra métricas, tabla y botón de descarga</td></tr>
+        <tr><td>400</td><td>El archivo no es un CSV legible</td><td>"El archivo debe ser un CSV"</td></tr>
+        <tr><td><span style="color:var(--amber)">422</span></td><td>Faltan columnas que el modelo necesita</td><td>Lista las columnas faltantes</td></tr>
+        <tr><td>403</td><td>Faltan los permisos públicos de la URL</td><td>"Error 403" → revisar el Paso 6 del despliegue</td></tr>
+        <tr><td><span class="bad">500</span></td><td>Falló algo dentro del backend</td><td>Mensaje genérico · el detalle está en <b>CloudWatch Logs</b></td></tr>
+        <tr><td>timeout</td><td>No respondió en 90 s</td><td>"Reintenta": suele ser el cold start</td></tr>
+      </tbody>
+    </table>
+    <div class="r alert" style="background:var(--amber-t);border-color:rgba(240,184,92,.4);margin-top:14px;padding:13px 20px"><span class="ic" style="color:var(--amber)">!</span><p><b>Caso real en clase:</b> subir un CSV de <i>House Sales in King County</i> (<code>bedrooms</code>, <code>zipcode</code>, <code>lat</code>…) devuelve <b>422</b>. El modelo se entrenó con <i>House Prices</i> de Kaggle (Ames): <b>un modelo solo predice con las variables con las que se entrenó</b>.</p></div>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+  <!-- 10 · RESUMEN -->
+  <section class="slide" data-title="Resumen">
+    <p class="r kicker">Resumen</p>
+    <h2 class="r">Para llevarse</h2>
+    <ul class="r sum">
+      <li><span class="n">01</span><span>Desplegar en Lambda con Function URL = <b>un endpoint HTTPS</b> con todas las rutas de tu FastAPI.</span></li>
+      <li><span class="n">02</span><span>Es <b>serverless</b>: escala a cero y cobra por uso. SageMaker cobra por hora aunque nadie lo use.</span></li>
+      <li><span class="n">03</span><span>No hay manifiesto ni tipo de instancia: <b>eliges memoria</b> y la CPU viene con ella.</span></li>
+      <li><span class="n">04</span><span>Dimensiona con datos: <b>Max Memory Used</b> e <b>Init Duration</b> en los logs.</span></li>
+      <li><span class="n">05</span><span>El frontend solo conoce la <b>URL y el contrato</b> (ruta, campo <code>file</code>, CSV). React además necesita <b>CORS</b>.</span></li>
+      <li><span class="n">06</span><span>La URL es <b>pública</b>: bórrala al terminar.</span></li>
+    </ul>
+    <div class="foot"><span>Lambda como endpoint</span><span>Datapath · MLOps</span></div>
+  </section>
+
+</div>
+</div>
+
+<div class="hint">← → espacio · F pantalla completa</div>
+<nav class="nav" aria-label="Navegación de slides">
+  <button id="prev" aria-label="Slide anterior">‹</button>
+  <span id="count">1 / 1</span>
+  <button id="next" aria-label="Slide siguiente">›</button>
+</nav>
+
+<script>
+(function(){
+  var stage=document.getElementById('stage');
+  var slides=[].slice.call(document.querySelectorAll('.slide'));
+  var count=document.getElementById('count');
+  var bar=document.getElementById('progress');
+  var i=0, n=slides.length;
+
+
+  function fit(){
+    var s=Math.min(window.innerWidth/1320, window.innerHeight/760);
+    stage.style.transform='scale('+s+')';
+  }
+  function go(k){
+    i=Math.max(0,Math.min(n-1,k));
+    slides.forEach(function(s,j){ s.classList.toggle('on', j===i); s.setAttribute('aria-hidden', j!==i); });
+    count.textContent=(i+1)+' / '+n;
+    bar.style.width=((i+1)/n*100)+'%';
+    if(location.hash!=='#'+(i+1)) history.replaceState(null,'','#'+(i+1));
+  }
+
+  document.getElementById('prev').onclick=function(){go(i-1)};
+  document.getElementById('next').onclick=function(){go(i+1)};
+  document.addEventListener('keydown',function(e){
+    if(['ArrowRight','PageDown',' ','Enter'].indexOf(e.key)>-1){e.preventDefault();go(i+1)}
+    else if(['ArrowLeft','PageUp','Backspace'].indexOf(e.key)>-1){e.preventDefault();go(i-1)}
+    else if(e.key==='Home'){go(0)} else if(e.key==='End'){go(n-1)}
+    else if(e.key==='f'||e.key==='F'){
+      if(!document.fullscreenElement){document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen()}
+      else{document.exitFullscreen&&document.exitFullscreen()}
+    }
+  });
+  var x0=null;
+  document.addEventListener('touchstart',function(e){x0=e.touches[0].clientX},{passive:true});
+  document.addEventListener('touchend',function(e){
+    if(x0===null)return; var dx=e.changedTouches[0].clientX-x0;
+    if(Math.abs(dx)>40) go(i+(dx<0?1:-1)); x0=null;
+  });
+
+  window.addEventListener('resize',fit);
+  fit();
+  var h=parseInt((location.hash||'').slice(1),10);
+  go(isNaN(h)?0:h-1);
+})();
+</script>
+</body>
+</html>
